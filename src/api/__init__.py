@@ -1,0 +1,1 @@
+"""HTTP surface: OpenAI-compatible routes plus the status dashboard."""

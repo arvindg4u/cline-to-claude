@@ -1,0 +1,1 @@
+"""Wire-format translation between OpenAI and Anthropic payloads."""

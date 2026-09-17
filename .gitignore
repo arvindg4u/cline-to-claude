@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.mypy_cache/
+
+# Local configuration and runtime data
+.env
+logs/
+logs-test/
+
+# Packaging
+build/
+dist/
+*.egg-info/

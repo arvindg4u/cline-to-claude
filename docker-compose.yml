@@ -1,0 +1,13 @@
+services:
+  proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - 4014:4014
+    volumes:
+      - ./.env:/app/.env
+    environment:
+      # Inside the container the host's loopback is not reachable by name, so
+      # point this at api.anthropic.com or your gateway.
+      HOST: 0.0.0.0

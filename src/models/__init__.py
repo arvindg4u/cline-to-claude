@@ -1,0 +1,1 @@
+"""Wire-format models: OpenAI (client side) and Claude/Anthropic (upstream side)."""
