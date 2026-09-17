@@ -28,9 +28,10 @@ class ClaudeContentBlockToolUse(BaseModel):
 
 
 class ClaudeContentBlockToolResult(BaseModel):
-    type: Literal["tool_result"]
+    type: Literal["tool_result"] = "tool_result"
     tool_use_id: str
     content: Union[str, List[Dict[str, Any]], Dict[str, Any]]
+    is_error: Optional[bool] = None
 
 
 class ClaudeContentBlockThinking(BaseModel):
@@ -71,6 +72,11 @@ class ClaudeThinkingConfig(BaseModel):
     budget_tokens: Optional[int] = None
 
 
+class ClaudeOutputConfig(BaseModel):
+    type: Literal["json_schema"] = "json_schema"
+    json_schema: Dict[str, Any]
+
+
 class ClaudeMessagesRequest(BaseModel):
     model: str
     max_tokens: int
@@ -85,6 +91,7 @@ class ClaudeMessagesRequest(BaseModel):
     tools: Optional[List[ClaudeTool]] = None
     tool_choice: Optional[Dict[str, Any]] = None
     thinking: Optional[ClaudeThinkingConfig] = None
+    output_config: Optional[ClaudeOutputConfig] = None
 
 
 class ClaudeTokenCountRequest(BaseModel):

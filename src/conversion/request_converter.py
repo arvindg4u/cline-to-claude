@@ -8,6 +8,7 @@ tool messages are merged into a single user turn.
 
 import json
 import uuid
+import warnings as _warnings
 from typing import Any, Dict, List, Optional
 
 from src.core.config import config
@@ -87,7 +88,10 @@ def convert_openai_to_claude(request: OpenAIChatRequest, model_manager) -> Dict[
     if tool_choice:
         payload["tool_choice"] = tool_choice
 
+    _apply_response_format(payload, request)
+    _apply_cache_control(payload)
     _apply_thinking(payload, request)
+    _maybe_warn_unsupported(request)
     return payload
 
 
@@ -165,7 +169,11 @@ def _user_blocks(message: OpenAIMessage) -> List[Dict[str, Any]]:
         if part_type in TEXT_PART_TYPES:
             text = str(item.get("text", ""))
             if text.strip():
-                blocks.append({"type": Constants.CONTENT_TEXT, "text": text})
+                block: Dict[str, Any] = {"type": Constants.CONTENT_TEXT, "text": text}
+                cc = item.get("cache_control")
+                if isinstance(cc, dict) and cc.get("type") == "ephemeral":
+                    block["cache_control"] = {"type": "ephemeral"}
+                blocks.append(block)
         elif part_type in IMAGE_PART_TYPES:
             block = _image_block(item)
             if block:
@@ -196,32 +204,40 @@ def _image_block(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         # Already an Anthropic-shaped image block.
         return {"type": Constants.CONTENT_IMAGE, "source": source}
 
-    url = None
     image_url = item.get("image_url")
     if isinstance(image_url, dict):
         url = image_url.get("url")
+        cc = image_url.get("cache_control")
     elif isinstance(image_url, str):
         url = image_url
+        cc = None
+    else:
+        url = None
+        cc = None
     if not url:
         return None
     if not url.startswith("data:"):
-        return {
+        block: Dict[str, Any] = {
             "type": Constants.CONTENT_IMAGE,
             "source": {"type": Constants.IMAGE_SOURCE_URL, "url": url},
         }
-
-    header, _, data = url.partition(",")
-    media_type = "image/png"
-    if ";" in header:
-        media_type = header[5:].split(";")[0] or media_type
-    return {
-        "type": Constants.CONTENT_IMAGE,
-        "source": {
-            "type": Constants.IMAGE_SOURCE_BASE64,
-            "media_type": media_type,
-            "data": data,
-        },
-    }
+    else:
+        header, _, data = url.partition(",")
+        media_type = "image/png"
+        if ";" in header:
+            media_type = header[5:].split(";")[0] or media_type
+        block = {
+            "type": Constants.CONTENT_IMAGE,
+            "source": {
+                "type": Constants.IMAGE_SOURCE_BASE64,
+                "media_type": media_type,
+                "data": data,
+            },
+        }
+    if isinstance(cc, dict) and cc.get("type") == "ephemeral":
+        block["cache_control"] = {"type": "ephemeral"}
+        block["source"]["cache_control"] = {"type": "ephemeral"}
+    return block
 
 
 def _assistant_blocks(message: OpenAIMessage) -> List[Dict[str, Any]]:
@@ -272,10 +288,18 @@ def _tool_result_block(message: OpenAIMessage) -> Dict[str, Any]:
     tool_use_id = message.tool_call_id or ""
     if not tool_use_id:
         logger.debug("tool message without tool_call_id; upstream may reject it")
+    # Cline may echo back the OpenAI tool-call error flag as a model
+    # extra (extra="allow"); Anthropic uses its own is_error key.
+    is_error: Optional[bool] = None
+    extra = getattr(message, "model_extra", None) or {}
+    if "is_error" in extra:
+        raw = extra["is_error"]
+        is_error = bool(raw) if isinstance(raw, (bool, str)) else None
     return {
         "type": Constants.CONTENT_TOOL_RESULT,
         "tool_use_id": tool_use_id,
         "content": _tool_result_content(message.content),
+        "is_error": is_error,
     }
 
 
@@ -417,6 +441,89 @@ def _clamp_unit(value: Any) -> float:
     except (TypeError, ValueError):
         return 1.0
     return max(0.0, min(1.0, number))
+
+
+# ── Extensions ────────────────────────────────────────────────────────
+
+def _apply_response_format(payload: Dict[str, Any], request: OpenAIChatRequest) -> None:
+    """OpenAI response_format -> Anthropic output_config (structured outputs).
+
+    Anthropic's native structured-output protocol lives in ``output_config``
+    with ``type="json_schema"``. Clients that send ``response_format={"type":
+    "json_schema", "json_schema": {"name": ..., "schema": ...}}`` get it
+    translated 1-for-1; anything unsupported is skipped with a debug log.
+    """
+    rf = request.response_format
+    if not isinstance(rf, dict):
+        return
+    schema = rf.get("json_schema") if rf.get("type") == "json_schema" else None
+    if isinstance(schema, dict) and schema.get("schema"):
+        payload["output_config"] = {
+            "type": Constants.OUTPUT_JSON_SCHEMA,
+            "json_schema": {
+                "name": str(schema.get("name", "structured_outputs")),
+                "schema": schema["schema"],
+                **({"strict": bool(schema.get("strict", False))} if "strict" in schema else {}),
+            },
+        }
+        logger.debug(
+            "Structured output: output_config.name=%s schema_keys=%d",
+            payload["output_config"]["json_schema"]["name"],
+            len(payload["output_config"]["json_schema"]["schema"]),
+        )
+    else:
+        logger.debug("Ignoring unsupported response_format: %s", rf)
+
+
+def _apply_cache_control(payload: Dict[str, Any]) -> None:
+    """Propagate cache_control hints on system and message content blocks.
+
+    Anthropic reads ``cache_control: {type: "ephemeral"}`` on text/image
+    blocks and turns them into cache reads/writes on subsequent requests.
+    The proxy passes them through untouched (it never synthesises them
+    itself) so that clients — or a higher-level wrapper — can tag blocks
+    for caching when useful.
+    """
+    if "system" in payload and isinstance(payload["system"], list):
+        for block in payload["system"]:
+            if isinstance(block, dict) and block.get("type") == Constants.CONTENT_TEXT:
+                cc = _extract_cache_control(block)
+                if cc is not None:
+                    block["cache_control"] = cc
+
+    for message in payload.get("messages", []):
+        content = message.get("content")
+        if isinstance(content, list):
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                cc = _extract_cache_control(block)
+                if cc is not None:
+                    block["cache_control"] = cc
+                    if block.get("type") == Constants.CONTENT_IMAGE:
+                        block.setdefault("source", {})["cache_control"] = cc
+
+
+def _extract_cache_control(block: Dict[str, Any]) -> Optional[Dict[str, str]]:
+    """Pull a cache_control dict out of a content block, if present."""
+    cc = block.get("cache_control")
+    if isinstance(cc, dict) and cc.get("type") == "ephemeral":
+        return {"type": "ephemeral"}
+    return None
+
+
+def _maybe_warn_unsupported(request: OpenAIChatRequest) -> None:
+    """Log a warning for fields the proxy silently drops.
+
+    OpenAI offers ``logit_bias`` to bias the model toward certain tokens;
+    Anthropic does not expose an equivalent on the Messages API, so the
+    proxy cannot honour it. Loud early warnings save confusing silent
+    behaviour later.
+    """
+    if request.logit_bias:
+        logger.warning(
+            "logit_bias received but dropped — no Anthropic Messages API equivalent exists"
+        )
 
 
 def _requested_thinking_budget(request: OpenAIChatRequest) -> int:

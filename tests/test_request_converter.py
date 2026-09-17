@@ -72,8 +72,18 @@ def test_assistant_tool_call_and_tool_result_round_trip():
     tool_turn = payload["messages"][2]
     assert tool_turn["role"] == "user"
     assert tool_turn["content"] == [
-        {"type": "tool_result", "tool_use_id": "call_1", "content": "a.txt"},
-        {"type": "tool_result", "tool_use_id": "call_1", "content": "(no output)"},
+        {
+            "type": "tool_result",
+            "tool_use_id": "call_1",
+            "content": "a.txt",
+            "is_error": None,
+        },
+        {
+            "type": "tool_result",
+            "tool_use_id": "call_1",
+            "content": "(no output)",
+            "is_error": None,
+        },
     ]
 
 
@@ -340,6 +350,128 @@ def test_thinking_is_opt_in_and_scales_with_effort(config_overrides):
         model_manager,
     )
     assert "thinking" not in silent
+
+
+def test_response_format_structured_output():
+    payload = convert_openai_to_claude(
+        build(
+            model="claude-sonnet-4-5",
+            messages=[{"role": "user", "content": "go"}],
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "answer",
+                    "schema": {"type": "object", "properties": {"a": {"type": "number"}}},
+                    "strict": True,
+                },
+            },
+        ),
+        model_manager,
+    )
+
+    assert payload["output_config"] == {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "answer",
+            "schema": {"type": "object", "properties": {"a": {"type": "number"}}},
+            "strict": True,
+        },
+    }
+
+
+def test_response_format_unsupported_is_ignored():
+    payload = convert_openai_to_claude(
+        build(
+            model="claude-sonnet-4-5",
+            messages=[{"role": "user", "content": "go"}],
+            response_format={"type": "json_object"},
+        ),
+        model_manager,
+    )
+
+    assert "output_config" not in payload
+
+
+def test_cache_control_ephemeral_passed_through():
+    payload = convert_openai_to_claude(
+        build(
+            model="claude-sonnet-4-5",
+            messages=[
+                {"role": "user", "content": "go"},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "look", "cache_control": {"type": "ephemeral"}},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": "https://example.com/img.png",
+                                "detail": "low",
+                                "cache_control": {"type": "ephemeral"},
+                            },
+                        },
+                    ],
+                },
+            ],
+            tools=[],
+        ),
+        model_manager,
+    )
+
+    # Consecutive user turns are merged into one — the merged turn
+    # contains all three blocks: "go", "look" (tagged), image (tagged).
+    assert len(payload["messages"]) == 1
+    content = payload["messages"][0]["content"]
+    assert len(content) == 3
+    # "go" — no cache_control
+    assert content[0] == {"type": "text", "text": "go"}
+    # "look" — with cache_control
+    assert content[1] == {
+        "type": "text",
+        "text": "look",
+        "cache_control": {"type": "ephemeral"},
+    }
+    # image — with cache_control on both block and source
+    assert content[2]["type"] == "image"
+    assert content[2].get("cache_control") == {"type": "ephemeral"}
+    assert content[2]["source"].get("cache_control") == {"type": "ephemeral"}
+
+
+def test_cache_control_is_noop_without_hints():
+    payload = convert_openai_to_claude(
+        build(model="claude-sonnet-4-5", messages=[{"role": "user", "content": "go"}]),
+        model_manager,
+    )
+
+    for message in payload["messages"]:
+        content = message.get("content")
+        if isinstance(content, list):
+            for block in content:
+                assert "cache_control" not in block
+
+
+def test_logit_bias_warning(monkeypatch, capsys):
+    import logging
+
+    captured: List[str] = []
+
+    class _CaptureHandler(logging.Handler):
+        def emit(self, record):
+            captured.append(record.getMessage())
+
+    monkeypatch.setattr(
+        "src.conversion.request_converter.logger",
+        logging.Logger("test", level=logging.WARNING),
+    )
+    logging.getLogger("test").addHandler(_CaptureHandler())
+    logging.getLogger("test").setLevel(logging.WARNING)
+
+    # Trigger via the request model field being present.
+    build(
+        model="claude-sonnet-4-5",
+        messages=[{"role": "user", "content": "go"}],
+        logit_bias={"5": 100},
+    )
 
 
 @pytest.mark.parametrize(

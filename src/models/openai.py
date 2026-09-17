@@ -67,6 +67,11 @@ class OpenAIChatRequest(BaseModel):
     metadata: Optional[Dict[str, Any]] = None
     user: Optional[str] = None
     n: Optional[int] = None
+    # Structured outputs — translated to Anthropic output_config.
+    response_format: Optional[Dict[str, Any]] = None
+    # logit_bias is not supported on the Anthropic wire; see request
+    # converter for a warning.
+    logit_bias: Optional[Dict[str, Any]] = None
 
     def requested_max_tokens(self) -> Optional[int]:
         """Newer OpenAI clients send max_completion_tokens; Cline sends both."""

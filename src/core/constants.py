@@ -44,6 +44,9 @@ class Constants:
     FINISH_TOOL_CALLS = "tool_calls"
     FINISH_CONTENT_FILTER = "content_filter"
 
+    # ── Structured outputs ──
+    OUTPUT_JSON_SCHEMA = "json_schema"
+
     # ── OpenAI tool plumbing ──
     TOOL_FUNCTION = "function"
     TOOL_CHOICE_AUTO = "auto"

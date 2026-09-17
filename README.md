@@ -36,6 +36,10 @@ It is the mirror image of its sibling project
 | Usage | `input_tokens`/`output_tokens` + cache reads → `prompt_tokens`/`completion_tokens`/`prompt_tokens_details.cached_tokens` |
 | Streaming | SSE comment keepalives during silent thinking phases, final usage chunk, `[DONE]` terminator, upstream errors surfaced as real HTTP status codes |
 | Resilience | Retries with backoff on 429/5xx/529 (stream-safe: only before the first byte), and the last upstream failure is persisted for the dashboard |
+| Structured outputs | OpenAI `response_format` (json_schema) → Anthropic `output_config` |
+| Prompt caching | `cache_control: {type: "ephemeral"}` on text/image blocks passed through to Anthropic |
+| Tool error flag | OpenAI `is_error` on tool messages → Anthropic `tool_result.is_error` |
+| Vision detail | OpenAI `detail` (low/high/auto) on images preserved in logs/metadata |
 
 ## Quick start
 
@@ -194,7 +198,7 @@ MODEL_MAP=fast=claude-haiku-4-5,smart=claude-opus-4-1
 ## Tests
 
 ```bash
-python3 -m pytest -q     # 58 tests: converters, streaming, HTTP end-to-end
+python3 -m pytest -q     # 63 tests: converters, streaming, HTTP end-to-end
 ```
 
 The suite runs the FastAPI app against a real (fake) Anthropic server on a

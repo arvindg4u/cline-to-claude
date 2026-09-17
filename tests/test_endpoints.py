@@ -308,6 +308,7 @@ def test_agentic_tool_loop_round_trip(client, upstream):
                 "type": "tool_result",
                 "tool_use_id": tool_call["id"],
                 "content": "total 0\n",
+                "is_error": None,
             }
         ],
     }
